@@ -1,0 +1,205 @@
+"""The ``socto`` command line interface."""
+
+from __future__ import annotations
+
+import json
+
+from conftest import FRAME_PERIOD_S, build_page_description, descriptions_for, write_tif
+from typer.testing import CliRunner
+
+from scanimage_octo_reader.cli import app
+
+runner = CliRunner()
+
+
+class TestHelp:
+    def test_bare_command_shows_help_and_succeeds(self):
+        """`socto` alone must be helpful, not an error."""
+        result = runner.invoke(app, [])
+        assert result.exit_code == 0
+        assert "Usage" in result.output
+        for command in ("info", "metadata", "triggers", "plot", "export", "pages", "check"):
+            assert command in result.output
+
+    def test_subcommand_without_arguments_shows_its_help(self):
+        """A subcommand with no files shows its own help.
+
+        The exit code is click's usual usage-error 2 here - unlike a bare
+        `socto`, an incomplete command really is a mistake - so this only
+        pins down that the user gets the help text rather than a traceback.
+        """
+        result = runner.invoke(app, ["export"])
+        assert "Usage" in result.output
+        assert "--no-plots" in result.output
+
+    def test_missing_file_is_reported(self, tmp_path):
+        result = runner.invoke(app, ["info", str(tmp_path / "nope.tif")])
+        assert result.exit_code != 0
+
+
+class TestInfo:
+    def test_summarises_without_writing(self, volumetric_tif, tmp_path):
+        result = runner.invoke(app, ["info", str(volumetric_tif)])
+        assert result.exit_code == 0, result.output
+        assert "volume__00001" in result.output
+        assert "Test_Scanner" in result.output
+        # Nothing may be created next to the input.
+        assert list(tmp_path.glob("volume__00001/**")) == []
+
+    def test_reports_triggers(self, single_plane_tif):
+        result = runner.invoke(app, ["info", str(single_plane_tif)])
+        assert "AUX0" in result.output
+        assert "2 events" in result.output
+
+    def test_handles_several_files(self, single_plane_tif, volumetric_tif):
+        result = runner.invoke(app, ["info", str(single_plane_tif), str(volumetric_tif)])
+        assert result.exit_code == 0
+        assert "plane__00001" in result.output
+        assert "volume__00001" in result.output
+
+
+class TestExportCommands:
+    def test_export_writes_everything(self, volumetric_tif, tmp_path):
+        result = runner.invoke(app, ["export", str(volumetric_tif), "-o", str(tmp_path / "out")])
+        assert result.exit_code == 0, result.output
+        directory = tmp_path / "out" / "volume__00001"
+        assert (directory / "metadata.json").exists()
+        assert (directory / "frames.npy").exists()
+        assert (directory / "aux" / "aux0.npy").exists()
+        assert (directory / "plots" / "overview.png").exists()
+        assert (directory / "plots" / "overview.pdf").exists()
+        assert (directory / "manifest.json").exists()
+
+    def test_export_without_plots(self, single_plane_tif, tmp_path):
+        runner.invoke(
+            app,
+            ["export", str(single_plane_tif), "-o", str(tmp_path / "out"), "--no-plots"],
+        )
+        assert not (tmp_path / "out" / "plane__00001" / "plots").exists()
+
+    def test_metadata_command_writes_json_only(self, single_plane_tif, tmp_path):
+        result = runner.invoke(
+            app, ["metadata", str(single_plane_tif), "-o", str(tmp_path / "out")]
+        )
+        assert result.exit_code == 0, result.output
+        directory = tmp_path / "out" / "plane__00001"
+        assert {p.name for p in directory.iterdir()} == {"metadata.json", "manifest.json"}
+        metadata = json.loads((directory / "metadata.json").read_text())
+        assert metadata["summary"]["n_pages"] == 20
+
+    def test_metadata_without_rois(self, single_plane_tif, tmp_path):
+        runner.invoke(
+            app,
+            ["metadata", str(single_plane_tif), "-o", str(tmp_path / "out"), "--no-rois"],
+        )
+        metadata = json.loads((tmp_path / "out" / "plane__00001" / "metadata.json").read_text())
+        assert "RoiGroups" not in metadata["scanimage"]
+
+    def test_triggers_command_writes_tables_only(self, single_plane_tif, tmp_path):
+        result = runner.invoke(
+            app, ["triggers", str(single_plane_tif), "-o", str(tmp_path / "out")]
+        )
+        assert result.exit_code == 0, result.output
+        directory = tmp_path / "out" / "plane__00001"
+        assert (directory / "aux" / "aux0.npy").exists()
+        assert (directory / "frames.npy").exists()
+        assert not (directory / "metadata.json").exists()
+
+    def test_overwrite_is_required_to_replace_output(self, single_plane_tif, tmp_path):
+        arguments = ["export", str(single_plane_tif), "-o", str(tmp_path / "out")]
+        assert runner.invoke(app, arguments).exit_code == 0
+        assert runner.invoke(app, arguments).exit_code != 0
+        assert runner.invoke(app, [*arguments, "--overwrite"]).exit_code == 0
+
+    def test_acquisition_flag_merges_siblings(self, split_acquisition_tifs, tmp_path):
+        first, _second = split_acquisition_tifs
+        result = runner.invoke(
+            app, ["export", str(first), "-o", str(tmp_path / "out"), "--acquisition"]
+        )
+        assert result.exit_code == 0, result.output
+        manifest = json.loads((tmp_path / "out" / "split__00012" / "manifest.json").read_text())
+        assert manifest["n_pages"] == 20
+        assert len(manifest["source_files"]) == 2
+
+
+class TestPlotCommand:
+    def test_writes_png_and_pdf_by_default(self, single_plane_tif, tmp_path):
+        result = runner.invoke(app, ["plot", str(single_plane_tif), "-o", str(tmp_path / "out")])
+        assert result.exit_code == 0, result.output
+        plots = tmp_path / "out" / "plane__00001" / "plots"
+        assert (plots / "overview.png").exists()
+        assert (plots / "overview.pdf").exists()
+
+    def test_a_single_requested_format(self, single_plane_tif, tmp_path):
+        result = runner.invoke(
+            app, ["plot", str(single_plane_tif), "-o", str(tmp_path / "out"), "-f", "svg"]
+        )
+        assert result.exit_code == 0, result.output
+        plots = tmp_path / "out" / "plane__00001" / "plots"
+        assert {path.name for path in plots.iterdir()} == {"overview.svg"}
+
+    def test_repeated_format_options(self, single_plane_tif, tmp_path):
+        result = runner.invoke(
+            app,
+            [
+                "plot",
+                str(single_plane_tif),
+                "-o",
+                str(tmp_path / "out"),
+                "-f",
+                "pdf",
+                "-f",
+                "svg",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        plots = tmp_path / "out" / "plane__00001" / "plots"
+        assert {path.name for path in plots.iterdir()} == {"overview.pdf", "overview.svg"}
+
+    def test_rejects_an_unknown_format(self, single_plane_tif, tmp_path):
+        result = runner.invoke(
+            app,
+            ["plot", str(single_plane_tif), "-o", str(tmp_path), "--format", "jpeg"],
+        )
+        assert result.exit_code == 2
+
+
+class TestPagesCommand:
+    def test_table_output(self, single_plane_tif):
+        result = runner.invoke(app, ["pages", str(single_plane_tif), "--stop", "3"])
+        assert result.exit_code == 0, result.output
+        assert "frame_number" in result.output
+
+    def test_csv_output(self, single_plane_tif):
+        result = runner.invoke(app, ["pages", str(single_plane_tif), "--stop", "3", "--csv"])
+        assert result.exit_code == 0
+        lines = [line for line in result.output.splitlines() if line.strip()]
+        assert lines[0].startswith("page_index,frame_number")
+        assert len(lines) == 4  # header + 3 rows
+
+
+class TestCheckCommand:
+    def test_clean_file_exits_zero(self, single_plane_tif):
+        result = runner.invoke(app, ["check", str(single_plane_tif)])
+        assert result.exit_code == 0
+        assert "OK" in result.output
+
+    def test_broken_file_exits_nonzero(self, tmp_path):
+        path = tmp_path / "gap__00001.tif"
+        descriptions = [
+            build_page_description(number, index * FRAME_PERIOD_S)
+            for index, number in enumerate([1, 2, 6, 7])
+        ]
+        write_tif(path, descriptions)
+        result = runner.invoke(app, ["check", str(path)])
+        assert result.exit_code == 1
+        assert "FAILED" in result.output
+        assert "frame_number_gaps" in result.output
+
+    def test_quiet_suppresses_informational_lines(self, tmp_path):
+        path = tmp_path / "aborted__00001.tif"
+        write_tif(path, descriptions_for(6, mark_end=False))
+        verbose = runner.invoke(app, ["check", str(path)])
+        quiet = runner.invoke(app, ["check", str(path), "--quiet"])
+        assert "no_end_of_acquisition" in verbose.output
+        assert "no_end_of_acquisition" not in quiet.output
