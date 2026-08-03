@@ -208,21 +208,7 @@ with 67 stimulus triggers on AUX 0.*
    a dropout is a kink.
 
 Every figure is written twice: `overview.png` to look at, and `overview.pdf`
-for dropping into a figure. The PDF is set up so **text stays editable** -
-matplotlib's default Type 3 fonts get converted to outlines by Illustrator and
-friends, so `pdf.fonttype`/`ps.fonttype` are set to 42 (TrueType) and
-`svg.fonttype` to `none`. Labels can therefore still be re-typeset or
-recoloured downstream. `-f/--format` picks specific formats and is repeatable
-(`-f pdf -f svg`).
-
-Styling is seaborn's `whitegrid` theme with the `deep` palette at
-`font_scale=1.25`, applied per figure rather than globally so importing this
-package never changes the look of your own plots. No font size is set
-anywhere in the code - seaborn's context governs all text, so a single
-`FONT_SCALE` rescales the whole figure coherently. Colour roles are fixed:
-the frame clock is always blue, the median reference always red, rate traces
-always green, so a colour means the same thing in every panel. Rendering uses
-matplotlib's `Agg` backend, so it works headless and over SSH.
+for dropping into a figure. 
 
 ## Quality control
 
