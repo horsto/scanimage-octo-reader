@@ -26,13 +26,37 @@ about a second.
 
 ## Install
 
+Straight from GitHub, no clone needed:
+
+```bash
+pip install "git+https://github.com/horsto/scanimage-octo-reader.git"
+```
+
+Or into a dedicated environment - Python 3.11 keeps the package
+co-installable with the `octron` environment:
+
 ```bash
 conda create -n scanimage-octo-reader python=3.11
 conda activate scanimage-octo-reader
-pip install -e '.[dev]'
+pip install "git+https://github.com/horsto/scanimage-octo-reader.git"
 ```
 
-Python 3.11 keeps the package co-installable with the `octron` environment.
+A branch, tag or commit can be pinned with `@`, which is worth doing for
+anything whose results you want to reproduce later:
+
+```bash
+pip install "git+https://github.com/horsto/scanimage-octo-reader.git@main"
+```
+
+Either way you get the `socto` command on your `PATH`.
+
+For development, clone and install in editable mode with the test tooling:
+
+```bash
+git clone https://github.com/horsto/scanimage-octo-reader.git
+cd scanimage-octo-reader
+pip install -e '.[dev]'
+```
 
 ## Quickstart
 
