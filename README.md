@@ -181,12 +181,17 @@ is always strictly valid JSON.
 
 ## Plots
 
+![Example overview figure for a volumetric recording with a 10 s light-stim TTL on AUX 0](docs/images/overview_example.png)
+
+*`socto export LC_brain1__00004.tif` - 20 000 pages, 5000 volumes of 3 slices,
+with 67 stimulus triggers on AUX 0.*
+
 `plots/overview.png` has three panels on a shared time axis:
 
 1. **Frame interval** vs time, with the median marked, and the volume period
    named in the panel title - dropped frames and clock drift are visible
-   immediately (the sample recording shows the resonant scanner settling by
-   ~2 us over 11 minutes).
+   immediately. In the figure above the resonant scanner is still settling for
+   the first few minutes, drifting well under a microsecond per frame.
 2. **Trigger raster**, one row per non-empty AUX line plus I2C. A line with
    thousands of events (ScanImage will happily log a trigger on *every* frame)
    switches automatically to a binned event-rate trace instead of a solid
