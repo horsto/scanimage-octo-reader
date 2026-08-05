@@ -57,7 +57,9 @@ line-length = 100
 target-version = 'py311'
 # Exploratory notebooks follow their own conventions (out-of-order cells,
 # imports where they are first needed); linting them adds noise, not safety.
-extend-exclude = ['notebooks']
+# `_version.py` is written by setuptools_scm at build time and is not ours to
+# format.
+extend-exclude = ['notebooks', 'src/scanimage_octo_reader/_version.py']
 
 [tool.ruff.lint]
 select = ['E', 'F', 'I', 'UP', 'B', 'C4', 'SIM']
