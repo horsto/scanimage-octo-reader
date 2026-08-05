@@ -1,5 +1,10 @@
 # scanimage-octo-reader
 
+[![CI](https://github.com/horsto/scanimage-octo-reader/actions/workflows/ci.yml/badge.svg)](https://github.com/horsto/scanimage-octo-reader/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+
 Inspect ScanImage TIFF timeseries from the command line: export structured
 metadata as JSON, unpack the per-page **AUX trigger** and **I2C** records that
 vDAQ writes into every frame header, plot the acquisition timeline, and check
