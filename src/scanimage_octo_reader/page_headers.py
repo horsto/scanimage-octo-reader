@@ -140,6 +140,9 @@ class PageSweep:
     # Distinct page-header key sets encountered, with page counts. More than
     # one entry means the header layout changed mid-file, which `qc` reports.
     key_sets: dict[tuple[str, ...], int] = field(default_factory=dict)
+    # Which key set each page used, as an index into `list(key_sets)`. Lets QC
+    # point at the offending frames rather than just counting variants.
+    key_set_ids: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
     # Keys with no dedicated converter, with one example value each.
     unknown_keys: dict[str, str] = field(default_factory=dict)
     # Pages found by following the IFD chain past what tifffile reported
@@ -299,6 +302,8 @@ def sweep_pages(
     i2c_packets: list[I2CPacket] = []
     i2c_pages: list[int] = []
     key_sets: dict[tuple[str, ...], int] = {}
+    key_set_index: dict[tuple[str, ...], int] = {}
+    key_set_ids = np.zeros(n_pages, dtype=np.int32)
     unknown_keys: dict[str, str] = {}
 
     known_keys = {key for key, _name, _dtype, _fill in _SCALAR_FIELDS}
@@ -309,6 +314,7 @@ def sweep_pages(
         parsed = _parse_description(description)
         signature = tuple(parsed)
         key_sets[signature] = key_sets.get(signature, 0) + 1
+        key_set_ids[page_index] = key_set_index.setdefault(signature, len(key_set_index))
 
         for key, name, dtype, fill in _SCALAR_FIELDS:
             raw = parsed.get(key)
@@ -386,6 +392,7 @@ def sweep_pages(
         aux=aux,
         i2c=i2c_records,
         key_sets=key_sets,
+        key_set_ids=key_set_ids,
         unknown_keys=unknown_keys,
         n_recovered_pages=n_recovered_pages,
     )

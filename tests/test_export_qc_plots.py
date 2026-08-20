@@ -238,6 +238,36 @@ class TestQC:
             report.stats["implied_frame_rate_hz"]
         )
 
+    def test_truncated_header_losing_trigger_fields_is_an_error(self, tmp_path):
+        """A flood on one AUX line can push later fields out of the header.
+
+        ScanImage writes the frame header into a fixed-size buffer in a fixed
+        key order, so too many timestamps on an early AUX line silently drop
+        `auxTrigger2`, `auxTrigger3` and `I2CData`. Those events are then
+        absent from the file altogether, which must not pass quietly.
+        """
+        path = tmp_path / "truncated__00001.tif"
+        descriptions = descriptions_for(6)
+        # Simulate the overflow: cut frame 2's header after auxTrigger1.
+        descriptions[2] = descriptions[2].split("auxTrigger2")[0]
+        write_tif(path, descriptions)
+
+        report = check_recording(read_recording(path))
+        assert not report.ok
+        issue = next(i for i in report.errors if i.code == "truncated_page_header")
+        assert issue.details["n_frames"] == 1
+        assert issue.details["first_frames"] == [2]
+        assert set(issue.details["lost_keys"]) == {"auxTrigger2", "auxTrigger3", "I2CData"}
+        assert report.stats["n_truncated_page_headers"] == 1
+        # Truncation explains the differing key sets, so it is not also
+        # reported as generic drift.
+        assert "page_header_drift" not in [i.code for i in report.issues]
+
+    def test_intact_headers_report_no_truncation(self, single_plane_tif):
+        report = check_recording(read_recording(single_plane_tif))
+        assert "truncated_page_header" not in [i.code for i in report.issues]
+        assert "n_truncated_page_headers" not in report.stats
+
     def test_volume_rate_mismatch_with_the_header_warns(self, tmp_path):
         from conftest import build_header
 

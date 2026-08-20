@@ -226,6 +226,7 @@ for dropping into a figure.
 - the volume rate implied by the timestamps disagreeing with the header's
   `scanVolumeRate` by more than 1 %
 - page counts that are not a whole number of volumes
+- **truncated frame headers** (an error when trigger fields are lost) - see below
 - page-header key-set changes mid-recording, and unknown header keys
 - `dcOverVoltage` frames, whose pixel data may be clipped
 - a missing end-of-acquisition flag (possibly aborted or incomplete)
@@ -233,6 +234,35 @@ for dropping into a figure.
 The report's `stats` carry both sampling rates measured from the data:
 `implied_frame_rate_hz` (planes) and `implied_volume_rate_hz` (volumes), plus
 their median intervals and jitter.
+
+### Truncated frame headers
+
+Worth knowing about, because it silently destroys data at acquisition time.
+ScanImage serialises each frame header into a **fixed-size buffer** (2001
+bytes in the files seen so far) with the keys always in the same order:
+
+```
+... auxTrigger0, auxTrigger1, auxTrigger2, auxTrigger3, I2CData
+```
+
+If one AUX line records enough timestamps on a frame, the later keys no longer
+fit and are dropped from that header entirely - no error, no marker, the
+fields are simply gone. A noisy or bouncing input on `auxTrigger1` can
+therefore erase `auxTrigger2`, `auxTrigger3` and all I2C data for that frame.
+
+`socto check` detects this by spotting headers whose key list is a strict
+prefix of the complete one, and reports which frames and which keys were lost.
+It is an **error** when the lost keys are trigger/I2C fields (those events are
+unrecoverable), and a warning otherwise. A real recording that hit this:
+
+```
+FAILED 0Rec6_septa1
+  error truncated_page_header: 1 frame header(s) were truncated by ScanImage's
+  fixed-size header buffer, losing I2CData, auxTrigger2, auxTrigger3 ...
+```
+
+The fix is at the source: debounce or clean up the offending input. ScanImage
+allows up to 1000 triggers per frame but recommends keeping it near 10.
 
 ## Notes on the format
 

@@ -333,16 +333,98 @@ def _check_volume_alignment(recording: Recording, report: QCReport) -> None:
         )
 
 
+# Header fields whose loss means recorded events are missing from the file,
+# as opposed to a merely cosmetic gap in the frame table.
+_EVENT_KEYS = frozenset({f"auxTrigger{line}" for line in range(4)} | {"I2CData"})
+
+
+def _check_truncated_headers(recording: Recording, report: QCReport) -> set[tuple[str, ...]]:
+    """Flag pages whose frame header was cut short, losing trailing fields.
+
+    ScanImage serialises the per-page header into a fixed-size buffer (2001
+    bytes in the files seen so far), with the keys always in the same order,
+    ending ``auxTrigger0..3`` then ``I2CData``. A flood of timestamps on an
+    earlier AUX line can therefore push later keys out of the header entirely.
+    Any events in those fields are unrecoverable, so loss of an AUX or I2C key
+    is an error rather than a generic format warning.
+
+    Returns the key sets identified as truncated, so the caller can avoid
+    reporting them a second time as generic header drift.
+    """
+    key_sets = recording.sweep.key_sets
+    key_set_ids = recording.sweep.key_set_ids
+    if len(key_sets) < 2:
+        return set()
+
+    signatures = list(key_sets)
+    # A truncated header is a strict prefix of the longest (complete) one:
+    # fields are lost from the end of ScanImage's fixed-order string.
+    reference = max(signatures, key=len)
+    truncated = {
+        signature
+        for signature in signatures
+        if len(signature) < len(reference) and reference[: len(signature)] == signature
+    }
+    if not truncated:
+        return set()
+
+    lost: set[str] = set()
+    affected: list[int] = []
+    for index, signature in enumerate(signatures):
+        if signature not in truncated:
+            continue
+        lost.update(reference[len(signature) :])
+        if key_set_ids.size:
+            affected.extend(np.flatnonzero(key_set_ids == index).tolist())
+
+    affected.sort()
+    n_affected = len(affected) or sum(key_sets[signature] for signature in truncated)
+    report.stats["n_truncated_page_headers"] = n_affected
+
+    lost_events = sorted(lost & _EVENT_KEYS)
+    level = "error" if lost_events else "warning"
+    detail = (
+        f"losing {', '.join(sorted(lost))} on those frames"
+        if lost
+        else "losing trailing fields on those frames"
+    )
+    message = (
+        f"{n_affected} frame header(s) were truncated by ScanImage's fixed-size header "
+        f"buffer, {detail}. This happens when an earlier AUX line records so many "
+        "timestamps that the later fields no longer fit"
+    )
+    if lost_events:
+        message += (
+            f"; any {', '.join(lost_events)} events on those frames were never written "
+            "to the file and cannot be recovered"
+        )
+    report.add(
+        level,
+        "truncated_page_header",
+        message,
+        n_frames=n_affected,
+        first_frames=affected[:10],
+        lost_keys=sorted(lost),
+    )
+    return truncated
+
+
 def _check_header_stability(recording: Recording, report: QCReport) -> None:
     key_sets = recording.sweep.key_sets
-    if len(key_sets) > 1:
+    truncated = _check_truncated_headers(recording, report)
+    # Only report drift for variants that truncation does not already explain.
+    remaining = len(key_sets) - len(truncated)
+    if remaining > 1:
         report.add(
             "warning",
             "page_header_drift",
-            f"page headers use {len(key_sets)} different key sets across the recording; "
+            f"page headers use {remaining} different key sets across the recording; "
             "the frame table may be incomplete for some pages",
-            n_key_sets=len(key_sets),
-            page_counts=sorted(key_sets.values(), reverse=True),
+            n_key_sets=remaining,
+            page_counts=sorted(
+                (count for signature, count in key_sets.items() if signature not in truncated),
+                reverse=True,
+            ),
         )
     if recording.sweep.unknown_keys:
         report.add(

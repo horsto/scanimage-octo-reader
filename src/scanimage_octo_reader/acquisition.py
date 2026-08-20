@@ -265,6 +265,8 @@ def read_recording(
     aux_chunks: dict[int, list[np.ndarray]] = {}
     i2c_records: list[I2CRecord] = []
     key_sets: dict[tuple[str, ...], int] = {}
+    key_set_index: dict[tuple[str, ...], int] = {}
+    key_set_id_chunks: list[np.ndarray] = []
     unknown_keys: dict[str, str] = {}
     n_recovered_pages = 0
     page_offset = 0
@@ -312,8 +314,17 @@ def read_recording(
         for line, events in file_sweep.aux.items():
             aux_chunks.setdefault(line, []).append(events)
         i2c_records.extend(file_sweep.i2c)
+        # Each file numbers its key sets independently, so remap onto the
+        # combined numbering before concatenating.
+        file_signatures = list(file_sweep.key_sets)
         for signature, count in file_sweep.key_sets.items():
             key_sets[signature] = key_sets.get(signature, 0) + count
+            key_set_index.setdefault(signature, len(key_set_index))
+        if file_signatures:
+            remap = np.array(
+                [key_set_index[signature] for signature in file_signatures], dtype=np.int32
+            )
+            key_set_id_chunks.append(remap[file_sweep.key_set_ids])
         for key, value in file_sweep.unknown_keys.items():
             unknown_keys.setdefault(key, value)
         n_recovered_pages += file_sweep.n_recovered_pages
@@ -325,6 +336,9 @@ def read_recording(
         aux={line: np.concatenate(chunks) for line, chunks in sorted(aux_chunks.items())},
         i2c=i2c_records,
         key_sets=key_sets,
+        key_set_ids=(
+            np.concatenate(key_set_id_chunks) if key_set_id_chunks else np.empty(0, dtype=np.int32)
+        ),
         unknown_keys=unknown_keys,
         n_recovered_pages=n_recovered_pages,
     )

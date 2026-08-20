@@ -92,6 +92,33 @@ class TestMerging:
         assert recording.n_pages == 20
         assert recording.paths == [first, second]
 
+    def test_truncated_header_is_located_in_the_right_file(self, tmp_path):
+        """Key sets are numbered per file, so merging must remap them.
+
+        Without the remap a truncated header in the second file would be
+        attributed to the wrong frames, or missed entirely.
+        """
+        from scanimage_octo_reader import check_recording
+
+        first = tmp_path / "trunc__00007_00001.tif"
+        second = tmp_path / "trunc__00007_00002.tif"
+        write_tif(first, descriptions_for(5, mark_end=False))
+
+        tail = descriptions_for(5, first_frame_number=6, first_timestamp_s=5 * FRAME_PERIOD_S)
+        # Frame 3 of the second file loses everything after auxTrigger1.
+        tail[3] = tail[3].split("auxTrigger2")[0]
+        write_tif(second, tail)
+
+        recording = read_recording(first, merge_acquisition=True)
+        assert recording.n_pages == 10
+        assert recording.sweep.key_set_ids.size == 10
+
+        report = check_recording(recording)
+        issue = next(i for i in report.errors if i.code == "truncated_page_header")
+        # Page 8 overall: 5 pages from the first file, then index 3.
+        assert issue.details["first_frames"] == [8]
+        assert issue.details["n_frames"] == 1
+
     def test_mismatched_explicit_list_warns(self, tmp_path):
         first = tmp_path / "a__00001_00001.tif"
         second = tmp_path / "b__00002_00001.tif"
