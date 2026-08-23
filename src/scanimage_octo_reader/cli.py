@@ -398,6 +398,243 @@ def pages(
     console.print(table)
 
 
+@app.command(name="calibrate-grid", no_args_is_help=True)
+def calibrate_grid(
+    inputs: Annotated[
+        list[Path],
+        typer.Argument(
+            exists=True,
+            readable=True,
+            show_default=False,
+            help="Grid-target TIFF file(s), or a directory containing them.",
+        ),
+    ],
+    pitch_um: Annotated[
+        float,
+        typer.Option("--pitch-um", help="Known spacing between adjacent grid lines, in \u00b5m."),
+    ] = 10.0,
+    center_frac: Annotated[
+        float,
+        typer.Option(
+            "--center-frac",
+            help="Fraction of the perpendicular axis used to build the line profile.",
+        ),
+    ] = 0.5,
+    min_peaks: Annotated[
+        int,
+        typer.Option(
+            "--min-peaks", help="Minimum detected lines required to accept a measurement."
+        ),
+    ] = 5,
+    max_pitch_cv: Annotated[
+        float,
+        typer.Option(
+            "--max-pitch-cv",
+            help="Maximum allowed relative spread (MAD/median) of the line spacing.",
+        ),
+    ] = 0.15,
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            "--out",
+            "-o",
+            file_okay=False,
+            show_default=False,
+            help=(
+                "Directory to write calibration.csv and calibration.png into. "
+                "Defaults to the input directory."
+            ),
+        ),
+    ] = None,
+    diagnostics: Annotated[
+        bool,
+        typer.Option(
+            "--diagnostics/--no-diagnostics",
+            help="Also save a per-file peak-detection plot next to the CSV.",
+        ),
+    ] = False,
+) -> None:
+    """Measure px-to-\u00b5m calibration per zoom level from grid-target TIFFs.
+
+    Writes the raw ``zoom, px_to_micron_x/y, micron_to_px_x/y, n_peaks_x/y``
+    as CSV, and always saves a zoom-vs-\u00b5m/pixel summary plot next to it
+    so the result can be sanity-checked visually as well as numerically.
+    Unreliable measurements are printed as warnings, not filtered out.
+    """
+    from scanimage_octo_reader.calibration import (
+        average_projection,
+        build_calibration_table,
+        measure_pitch,
+        parse_grid_filename,
+        plot_calibration_summary,
+        plot_pitch_diagnostic,
+        resolve_grid_files,
+        resolve_zoom,
+        write_calibration_csv,
+    )
+
+    files = resolve_grid_files(inputs)
+    if not files:
+        error_console.print("[red]error[/red] no TIFF files found in the given input(s)")
+        raise typer.Exit(code=2)
+
+    first_input = inputs[0]
+    if out is not None:
+        out_dir = Path(out)
+    else:
+        out_dir = first_input if first_input.is_dir() else first_input.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    rows, messages = build_calibration_table(
+        files,
+        pitch_um=pitch_um,
+        center_frac=center_frac,
+        min_peaks=min_peaks,
+        max_pitch_cv=max_pitch_cv,
+    )
+    for message in messages:
+        error_console.print(f"[yellow]warning[/yellow] {message}")
+
+    csv_path = out_dir / "calibration.csv"
+    plot_path = out_dir / "calibration.png"
+    write_calibration_csv(rows, csv_path)
+    plot_calibration_summary(rows, plot_path)
+
+    if diagnostics:
+        diag_dir = out_dir / "calibration_diagnostics"
+        n_written = 0
+        for path in files:
+            info = parse_grid_filename(path)
+            if info is None:
+                continue
+            zoom, _zoom_warning = resolve_zoom(info)  # already warned about above
+            image = average_projection(info.path)
+            measurement = measure_pitch(
+                image,
+                axis=info.orientation,
+                pitch_um=pitch_um,
+                center_frac=center_frac,
+                min_peaks=min_peaks,
+                max_pitch_cv=max_pitch_cv,
+            )
+            plot_pitch_diagnostic(measurement, info, diag_dir / f"{info.path.stem}.png", zoom=zoom)
+            n_written += 1
+        console.print(f"[green]wrote[/green] {diag_dir} ({n_written} diagnostic plot(s))")
+
+    table = Table(title="grid calibration", box=None)
+    table.add_column("zoom", justify="right")
+    table.add_column("px_to_micron_x", justify="right")
+    table.add_column("micron_to_px_x", justify="right")
+    table.add_column("res_x", justify="right")
+    table.add_column("px_to_micron_y", justify="right")
+    table.add_column("micron_to_px_y", justify="right")
+    table.add_column("res_y", justify="right")
+    for row in rows:
+        table.add_row(
+            f"{row.zoom:g}",
+            f"{row.px_to_micron_x:.5g}" if row.px_to_micron_x is not None else "-",
+            f"{row.micron_to_px_x:.5g}" if row.micron_to_px_x is not None else "-",
+            str(row.resolution_px_x) if row.resolution_px_x is not None else "-",
+            f"{row.px_to_micron_y:.5g}" if row.px_to_micron_y is not None else "-",
+            f"{row.micron_to_px_y:.5g}" if row.micron_to_px_y is not None else "-",
+            str(row.resolution_px_y) if row.resolution_px_y is not None else "-",
+        )
+    console.print(table)
+
+    n_warnings = sum(1 for message in messages if not message.startswith("skipping "))
+    console.print(
+        f"[green]wrote[/green] {csv_path} and {plot_path} "
+        f"({len(rows)} zoom level(s), {n_warnings} unreliable measurement(s) warned about)"
+    )
+
+
+@app.command(no_args_is_help=True)
+def scalebar(
+    files: FilesArgument,
+    calibration: Annotated[
+        Path,
+        typer.Option(
+            "--calibration",
+            "-c",
+            exists=True,
+            dir_okay=False,
+            readable=True,
+            show_default=False,
+            help="Calibration CSV produced by `calibrate-grid`.",
+        ),
+    ],
+    length_um: Annotated[
+        float,
+        typer.Option("--length-um", help="Length of the burned-in scale bar, in \u00b5m."),
+    ] = 50.0,
+    out: OutOption = None,
+    acquisition: AcquisitionOption = False,
+    overwrite: OverwriteOption = False,
+    quiet: QuietOption = False,
+) -> None:
+    """Burn a scale bar into the average projection of each recording.
+
+    The projection is always computed first (mean over every page); the
+    calibration is then interpolated for the recording's zoom *and* rescaled
+    to the projection's actual pixel resolution, so a recording captured at a
+    different resolution than the calibration images (e.g. 1024 vs. 512) is
+    still handled correctly - see `interpolate_calibration`.
+    """
+    from PIL import Image
+
+    from scanimage_octo_reader.calibration import (
+        average_projection,
+        draw_scale_bar,
+        interpolate_calibration,
+        load_calibration_table,
+    )
+    from scanimage_octo_reader.export import default_output_root
+
+    table = load_calibration_table(calibration)
+    failed = False
+
+    for recording in _load(files, acquisition, quiet):
+        zoom = recording.summary()["zoom"]
+        if zoom is None:
+            error_console.print(f"[red]error[/red] {recording.name}: no zoom factor in the header")
+            failed = True
+            continue
+
+        projection = average_projection(recording.paths)
+        height, width = projection.shape
+        um_per_px_x, _um_per_px_y, calibration_errors = interpolate_calibration(
+            table, float(zoom), target_resolution_x=width, target_resolution_y=height
+        )
+        if um_per_px_x is None:
+            for calibration_error in calibration_errors:
+                error_console.print(f"[red]error[/red] {recording.name}: {calibration_error}")
+            failed = True
+            continue
+
+        annotated = draw_scale_bar(projection, um_per_px_x, bar_length_um=length_um)
+
+        root = default_output_root(recording) if out is None else Path(out)
+        directory = root / recording.name
+        directory.mkdir(parents=True, exist_ok=True)
+        out_path = directory / "scalebar.png"
+        if out_path.exists() and not overwrite:
+            error_console.print(
+                f"[red]error[/red] {out_path} already exists; pass --overwrite to replace it"
+            )
+            failed = True
+            continue
+        Image.fromarray(annotated).save(out_path)
+        if not quiet:
+            console.print(
+                f"[green]wrote[/green] {out_path} "
+                f"(zoom {zoom:g}, {width}x{height} px, {um_per_px_x:.4g} \u00b5m/px, "
+                f"{length_um:g} \u00b5m bar)"
+            )
+
+    if failed:
+        raise typer.Exit(code=1)
+
+
 @app.command(no_args_is_help=True)
 def check(
     files: FilesArgument,
