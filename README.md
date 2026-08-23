@@ -188,9 +188,16 @@ key for the stricter `'<key>_<value>'` string convention (e.g. `treadmill_9`),
 but only if *every* payload matches it; a partial decode would be quietly
 misleading.
 
-Negative I2C timestamps are ScanImage sentinels rather than data. They are
-exported with `valid=False` instead of being dropped, so filtering stays your
-decision.
+**Negative timestamps are dropped, not exported.** ScanImage's per-line AUX
+trigger register and I2C packet buffer are not necessarily cleared between
+acquisitions, so a fresh file's very first read can carry a stale trigger
+from well before this recording started - ScanImage marks these with a
+negative timestamp rather than omitting them. Since they are not real events
+(and, left in, a single one from hundreds of seconds earlier would dominate
+any timeline built from the export), both `socto export`/`socto triggers`
+and the overview plot drop them; `socto check` still reports the raw count
+(`aux_negative_timestamp` / `i2c_invalid_timestamp`), since a persistently
+stale register is itself worth knowing about.
 
 ### Metadata JSON
 
