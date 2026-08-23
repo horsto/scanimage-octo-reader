@@ -47,6 +47,8 @@ from scanimage_octo_reader.qc import QCReport, check_recording
 from scanimage_octo_reader.triggers import (
     decode_i2c_key_values,
     decode_i2c_payload_text,
+    filter_valid_aux_events,
+    filter_valid_i2c_records,
     i2c_payload_matrix,
     i2c_table,
 )
@@ -268,9 +270,10 @@ def export_recording(
             "n_pages": recording.n_pages,
             "pages_per_file": recording.pages_per_file,
             "aux_event_counts": {
-                f"aux{line}": int(events.size) for line, events in sorted(recording.aux.items())
+                f"aux{line}": int(filter_valid_aux_events(events).size)
+                for line, events in sorted(recording.aux.items())
             },
-            "n_i2c_packets": len(recording.i2c),
+            "n_i2c_packets": len(filter_valid_i2c_records(recording.i2c)),
             "files": result.relative_files(),
             "qc": result.qc.as_dict() if result.qc else None,
         },
@@ -280,22 +283,32 @@ def export_recording(
 
 
 def _write_aux(recording: Recording, directory: Path) -> list[Path]:
-    """Write one table per non-empty AUX line."""
-    if not recording.aux:
-        return []
+    """Write one table per non-empty AUX line, excluding sentinel events.
+
+    See `filter_valid_aux_events`: a stale sentinel timestamp from before
+    this recording started would otherwise sit in the exported timeline
+    (and skew anything plotted from it) despite not being a real trigger.
+    """
+    written: list[Path] = []
     aux_dir = directory / "aux"
-    aux_dir.mkdir(parents=True, exist_ok=True)
-    written = []
     for line, events in sorted(recording.aux.items()):
+        valid = filter_valid_aux_events(events)
+        if valid.size == 0:
+            continue
+        aux_dir.mkdir(parents=True, exist_ok=True)
         path = aux_dir / f"aux{line}.npy"
-        np.save(path, events)
+        np.save(path, valid)
         written.append(path)
     return written
 
 
 def _write_i2c(recording: Recording, directory: Path, decode_i2c: bool) -> list[Path]:
-    """Write the I2C packet table, payload matrix/text, raw strings and optional decode."""
-    records = recording.i2c
+    """Write the I2C packet table, payload matrix/text, raw strings and optional decode.
+
+    Packets with a sentinel timestamp are dropped first - see
+    `filter_valid_aux_events` for why.
+    """
+    records = filter_valid_i2c_records(recording.i2c)
     if not records:
         return []
 

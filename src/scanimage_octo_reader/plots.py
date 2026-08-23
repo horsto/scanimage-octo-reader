@@ -32,6 +32,8 @@ import matplotlib.pyplot as plt  # noqa: E402 - must follow the backend selectio
 import numpy as np  # noqa: E402
 import seaborn as sns  # noqa: E402
 
+from scanimage_octo_reader.triggers import filter_valid_aux_events, filter_valid_i2c_records
+
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
@@ -144,18 +146,21 @@ def _volume_times(recording: Recording) -> np.ndarray:
 
 
 def _event_series(recording: Recording) -> list[tuple[str, np.ndarray]]:
-    """Every non-empty event timeline as ``(label, timestamps)``, top row last."""
+    """Every non-empty event timeline as ``(label, timestamps)``, top row last.
+
+    Sentinel (negative-timestamp) events are excluded - see
+    `scanimage_octo_reader.triggers.filter_valid_aux_events` - since a stale
+    one from well before this acquisition began would otherwise dominate the
+    shared time axis and squash every real event into a sliver at one edge.
+    """
     series: list[tuple[str, np.ndarray]] = []
     for line, events in sorted(recording.aux.items()):
-        timestamps = events["timestamp_s"]
-        timestamps = timestamps[np.isfinite(timestamps)]
+        timestamps = filter_valid_aux_events(events)["timestamp_s"]
         if timestamps.size:
             series.append((f"AUX {line}", np.sort(timestamps)))
-    if recording.i2c:
-        i2c_times = np.array(
-            [record.packet.timestamp for record in recording.i2c], dtype=np.float64
-        )
-        i2c_times = i2c_times[np.isfinite(i2c_times)]
+    valid_i2c = filter_valid_i2c_records(recording.i2c)
+    if valid_i2c:
+        i2c_times = np.array([record.packet.timestamp for record in valid_i2c], dtype=np.float64)
         if i2c_times.size:
             series.append(("I2C", np.sort(i2c_times)))
     return series

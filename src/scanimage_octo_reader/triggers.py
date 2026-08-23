@@ -26,6 +26,8 @@ __all__ = [
     "aux_summary",
     "decode_i2c_key_values",
     "decode_i2c_payload_text",
+    "filter_valid_aux_events",
+    "filter_valid_i2c_records",
     "i2c_payload_matrix",
     "i2c_summary",
     "i2c_table",
@@ -57,6 +59,32 @@ I2C_TABLE_DTYPE = np.dtype(
 # The lab convention of encoding "<key>_<value>" into a char payload, e.g.
 # 'treadmill_9'. The value must be numeric for the decode to be meaningful.
 _KEY_VALUE_RE = re.compile(r"^(?P<key>.+)_(?P<value>[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)$")
+
+
+def filter_valid_aux_events(events: np.ndarray) -> np.ndarray:
+    """Drop AUX events with a non-finite or negative (sentinel) timestamp.
+
+    ScanImage's per-line trigger register is not necessarily cleared between
+    acquisitions, so a fresh file's first read can carry a stale timestamp
+    from well before this recording started; these are marked with a
+    negative `timestamp_s` rather than being omitted outright. Left in a raw
+    sweep, a single such sentinel can dominate a shared time axis (or a
+    timeline export) since it can sit arbitrarily far from every real event -
+    this is the filter that keeps them out of exports and plots, while
+    `qc.check_recording` still reports the raw count, since a persistently
+    stale register is itself worth knowing about.
+    """
+    timestamps = events["timestamp_s"]
+    return events[np.isfinite(timestamps) & (timestamps >= 0)]
+
+
+def filter_valid_i2c_records(records: Sequence[I2CRecord]) -> list[I2CRecord]:
+    """Drop I2C packets with a non-finite or negative (sentinel) timestamp.
+
+    See `filter_valid_aux_events` - the same stale-register quirk applies to
+    I2C packets, and `I2CPacket.is_valid_timestamp` already identifies them.
+    """
+    return [record for record in records if record.packet.is_valid_timestamp]
 
 
 def i2c_table(records: Sequence[I2CRecord]) -> np.ndarray:
