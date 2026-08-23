@@ -591,6 +591,43 @@ def interpolate_calibration(
     return px_to_micron_x, px_to_micron_y, errors
 
 
+def _load_scale_bar_font(size: int):
+    """Load a scalable font that can actually render \u00b5 (micro sign).
+
+    Pillow's own default font - even the larger scalable variant available
+    since Pillow 10.1 (`ImageFont.load_default(size=...)`) - has no \u00b5
+    glyph at all: it silently renders as a "tofu" box, and at its original
+    tiny bitmap size the whole label is barely legible besides. Matplotlib
+    (already a dependency here) ships DejaVu Sans, which covers it, so that
+    is preferred; a system font is tried next, and only as a last resort -
+    if truly no scalable font can be found - do we fall back to Pillow's
+    bitmap default, with \u00b5 replaced by "u" so the label stays readable
+    rather than showing a missing-glyph box.
+    """
+    from PIL import ImageFont
+
+    try:
+        import matplotlib
+
+        font_path = Path(matplotlib.get_data_path()) / "fonts" / "ttf" / "DejaVuSans.ttf"
+        if font_path.exists():
+            return ImageFont.truetype(str(font_path), size=size), True
+    except Exception:  # noqa: BLE001 - any font-loading failure just tries the next option
+        pass
+
+    for system_font in (
+        "/System/Library/Fonts/Supplemental/Arial.ttf",  # macOS
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # common Linux path
+        "C:\\Windows\\Fonts\\arial.ttf",  # Windows
+    ):
+        try:
+            return ImageFont.truetype(system_font, size=size), True
+        except Exception:  # noqa: BLE001 - try the next candidate
+            continue
+
+    return ImageFont.load_default(), False
+
+
 def draw_scale_bar(
     image: np.ndarray,
     um_per_px_x: float,
@@ -598,11 +635,17 @@ def draw_scale_bar(
     *,
     margin_px: int = 20,
     bar_thickness_px: int = 6,
+    font_size: int | None = None,
     color: tuple[int, int, int] = (255, 255, 255),
     position: Literal["bottom-right", "bottom-left", "top-right", "top-left"] = "bottom-right",
 ) -> np.ndarray:
-    """Contrast-stretch `image` to 8-bit RGB and burn in a scale bar with a label."""
-    from PIL import Image, ImageDraw, ImageFont
+    """Contrast-stretch `image` to 8-bit RGB and burn in a scale bar with a label.
+
+    `font_size` defaults to a size scaled with the image's shorter side, so
+    the label stays legible regardless of the recording's resolution rather
+    than using Pillow's fixed, tiny default bitmap font.
+    """
+    from PIL import Image, ImageDraw
 
     finite = image[np.isfinite(image)]
     if finite.size:
@@ -622,9 +665,14 @@ def draw_scale_bar(
     height, width = gray.shape
     label = f"{bar_length_um:g} \u00b5m"
 
-    font = ImageFont.load_default()
+    if font_size is None:
+        font_size = max(12, round(min(height, width) / 32))
+    font, supports_micro_sign = _load_scale_bar_font(font_size)
+    if not supports_micro_sign:
+        label = label.replace("\u00b5", "u")
     text_bbox = draw.textbbox((0, 0), label, font=font)
     text_height = text_bbox[3] - text_bbox[1]
+    label_gap_px = max(6, round(font_size / 2))
 
     if "right" in position:
         x1 = width - margin_px
@@ -636,7 +684,7 @@ def draw_scale_bar(
     y0 = y1 - bar_thickness_px
 
     draw.rectangle([x0, y0, x1, y1], fill=color)
-    text_y = y0 - text_height - 4 if "bottom" in position else y1 + 4
+    text_y = y0 - text_height - label_gap_px if "bottom" in position else y1 + label_gap_px
     draw.text(((x0 + x1) / 2, text_y), label, fill=color, font=font, anchor="ma")
 
     return np.array(pil_image)
