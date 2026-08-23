@@ -94,7 +94,7 @@ class TestExportCommands:
         directory = tmp_path / "out" / "volume__00001"
         assert (directory / "metadata.json").exists()
         assert (directory / "frames.npy").exists()
-        assert (directory / "aux" / "aux0.npy").exists()
+        assert (directory / "aux_triggers" / "aux0.npy").exists()
         assert (directory / "plots" / "overview.png").exists()
         assert (directory / "plots" / "overview.pdf").exists()
         assert (directory / "manifest.json").exists()
@@ -130,7 +130,7 @@ class TestExportCommands:
         )
         assert result.exit_code == 0, plain(result)
         directory = tmp_path / "out" / "plane__00001"
-        assert (directory / "aux" / "aux0.npy").exists()
+        assert (directory / "aux_triggers" / "aux0.npy").exists()
         assert (directory / "frames.npy").exists()
         assert not (directory / "metadata.json").exists()
 

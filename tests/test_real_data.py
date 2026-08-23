@@ -89,7 +89,7 @@ class TestLightStimRecording:
 
         result = export_recording(recording, tmp_path)
         assert (result.directory / "metadata.json").exists()
-        assert (result.directory / "aux" / "aux0.npy").exists()
+        assert (result.directory / "aux_triggers" / "aux0.npy").exists()
         assert (result.directory / "plots" / "overview.png").stat().st_size > 0
         assert (result.directory / "plots" / "overview.pdf").stat().st_size > 0
 

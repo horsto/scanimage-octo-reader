@@ -4,16 +4,16 @@ Layout, one directory per recording (named after the TIFF stem, or the shared
 stem of a merged acquisition)::
 
     <out>/<name>/
-      metadata.json              global metadata, summary, trigger inventory
-      frames.npy                 structured per-page table
-      aux/aux0.npy .. aux3.npy   per-line trigger event tables (non-empty only)
-      i2c/packets.npy            packet timing + frame context + payload length
-      i2c/payloads.npy           zero-padded uint8 payload matrix
-      i2c/payload_text.npy       payload bytes decoded to UTF-8 text, where possible
-      i2c/packets_raw.json       verbatim source strings
-      i2c/decoded_<key>.npy      optional '<key>_<value>' decode
-      plots/overview.png         frame timeline + trigger overview
-      manifest.json              what this run wrote, plus the QC report
+      metadata.json                       global metadata, summary, trigger inventory
+      frames.npy                          structured per-page table
+      aux_triggers/aux0.npy .. aux3.npy   per-line trigger event tables (non-empty only)
+      i2c/packets.npy                     packet timing + frame context + payload length
+      i2c/payloads.npy                    zero-padded uint8 payload matrix
+      i2c/payload_text.npy                payload bytes decoded to UTF-8 text, where possible
+      i2c/packets_raw.json                verbatim source strings
+      i2c/decoded_<key>.npy               optional '<key>_<value>' decode
+      plots/overview.png                  frame timeline + trigger overview
+      manifest.json                       what this run wrote, plus the QC report
 
 Everything is loadable with a bare `numpy.load` (no ``allow_pickle``) or
 `json.load`.
@@ -106,9 +106,26 @@ def to_jsonable(value: Any) -> Any:
     return str(value)
 
 
+def _ensure_dir(path: Path) -> None:
+    """Create `path` as a directory, tolerating flaky network-share races.
+
+    Some SMB-mounted shares report `FileExistsError` from
+    `Path.mkdir(..., exist_ok=True)` even when nothing is listed under that
+    name (a stale directory-entry cache, not a real conflict); retrying past
+    that specific case is safe. A path that exists as something other than
+    a directory still raises, since that is a genuine conflict this cannot
+    resolve.
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        if not path.is_dir():
+            raise
+
+
 def write_json(path: Path, payload: Any) -> None:
     """Write `payload` as indented, strictly-valid JSON."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_dir(path.parent)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(to_jsonable(payload), handle, indent=2, allow_nan=False)
         handle.write("\n")
@@ -184,7 +201,7 @@ def _guard_output_dir(directory: Path, overwrite: bool) -> None:
         raise FileExistsError(
             f"{directory} already exists and is not empty; pass overwrite to replace its contents"
         )
-    directory.mkdir(parents=True, exist_ok=True)
+    _ensure_dir(directory)
 
 
 def default_output_root(recording: Recording) -> Path:
@@ -288,14 +305,21 @@ def _write_aux(recording: Recording, directory: Path) -> list[Path]:
     See `filter_valid_aux_events`: a stale sentinel timestamp from before
     this recording started would otherwise sit in the exported timeline
     (and skew anything plotted from it) despite not being a real trigger.
+
+    The directory is named ``aux_triggers``, not the more obvious ``aux``:
+    the latter is one of the reserved MS-DOS device names (``CON``, ``PRN``,
+    ``AUX``, ``NUL``, ``COM1-9``, ``LPT1-9``), so creating a directory or
+    file with that exact base name fails - or is silently mangled into a
+    garbled short-name entry - on a Windows machine or a share it hosts,
+    aborting the export before the I2C files after it ever get written.
     """
     written: list[Path] = []
-    aux_dir = directory / "aux"
+    aux_dir = directory / "aux_triggers"
     for line, events in sorted(recording.aux.items()):
         valid = filter_valid_aux_events(events)
         if valid.size == 0:
             continue
-        aux_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_dir(aux_dir)
         path = aux_dir / f"aux{line}.npy"
         np.save(path, valid)
         written.append(path)
@@ -313,7 +337,7 @@ def _write_i2c(recording: Recording, directory: Path, decode_i2c: bool) -> list[
         return []
 
     i2c_dir = directory / "i2c"
-    i2c_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_dir(i2c_dir)
     written = []
 
     table_path = i2c_dir / "packets.npy"

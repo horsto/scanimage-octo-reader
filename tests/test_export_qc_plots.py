@@ -54,7 +54,7 @@ class TestExport:
         directory = tmp_path / "volume__00001"
         assert result.directory == directory
         written = set(result.relative_files())
-        assert {"metadata.json", "frames.npy", "aux/aux0.npy", "manifest.json"} <= written
+        assert {"metadata.json", "frames.npy", "aux_triggers/aux0.npy", "manifest.json"} <= written
         assert any(name.startswith("plots/overview") for name in written)
 
     def test_outputs_load_without_pickle(self, volumetric_tif, tmp_path):
@@ -66,7 +66,7 @@ class TestExport:
         assert frames.size == 24
         assert "frame_timestamp_s" in frames.dtype.names
 
-        events = np.load(directory / "aux" / "aux0.npy", allow_pickle=False)
+        events = np.load(directory / "aux_triggers" / "aux0.npy", allow_pickle=False)
         assert events["timestamp_s"].size == 1
 
     def test_manifest_records_sources_counts_and_qc(self, volumetric_tif, tmp_path):
@@ -101,7 +101,7 @@ class TestExport:
         write_tif(path, descriptions_for(4))
         export_recording(read_recording(path), tmp_path / "out")
         directory = tmp_path / "out" / "quiet__00001"
-        assert not (directory / "aux").exists()
+        assert not (directory / "aux_triggers").exists()
         assert not (directory / "i2c").exists()
 
     def test_existing_directory_is_protected(self, single_plane_tif, tmp_path):

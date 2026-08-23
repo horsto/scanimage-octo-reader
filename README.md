@@ -105,17 +105,17 @@ a merged acquisition). `<out>` defaults to the directory containing the TIFF:
 
 ```
 <out>/<name>/
-  metadata.json              global metadata, summary, trigger inventory
-  frames.npy                 structured per-page table
-  aux/aux0.npy .. aux3.npy   one table per non-empty AUX line
-  i2c/packets.npy            packet timing + frame context + payload length
-  i2c/payloads.npy           zero-padded uint8 payload matrix
-  i2c/payload_text.npy       payload bytes decoded to UTF-8 text, where possible
-  i2c/packets_raw.json       verbatim source strings
-  i2c/decoded_<key>.npy      optional '<key>_<value>' decode
-  plots/overview.png         frame timeline + trigger overview
-  plots/overview.pdf         same figure as vector art, text still editable
-  manifest.json              what was written, plus the QC report
+  metadata.json                       global metadata, summary, trigger inventory
+  frames.npy                          structured per-page table
+  aux_triggers/aux0.npy .. aux3.npy   one table per non-empty AUX line
+  i2c/packets.npy                     packet timing + frame context + payload length
+  i2c/payloads.npy                    zero-padded uint8 payload matrix
+  i2c/payload_text.npy                payload bytes decoded to UTF-8 text, where possible
+  i2c/packets_raw.json                verbatim source strings
+  i2c/decoded_<key>.npy               optional '<key>_<value>' decode
+  plots/overview.png                  frame timeline + trigger overview
+  plots/overview.pdf                  same figure as vector art, text still editable
+  manifest.json                       what was written, plus the QC report
 ```
 
 Everything loads with a bare `numpy.load` - fixed dtypes, no pickled objects:
@@ -124,7 +124,7 @@ Everything loads with a bare `numpy.load` - fixed dtypes, no pickled objects:
 import numpy as np
 
 frames = np.load("exports/LC_brain1__00001/frames.npy")
-aux0 = np.load("exports/LC_brain1__00001/aux/aux0.npy")
+aux0 = np.load("exports/LC_brain1__00001/aux_triggers/aux0.npy")
 
 print(frames["frame_timestamp_s"][:5])
 print(aux0["timestamp_s"], aux0["frame_number"], aux0["volume_index"])
@@ -145,6 +145,11 @@ to no Z position. `volume_timestamp_s` is the timestamp of the volume's first
 page, shared by every page of that volume (flyback included).
 
 ### AUX tables
+
+Written under `aux_triggers/`, not `aux/`: the latter is one of the reserved
+MS-DOS device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`), so a
+directory or file with that exact base name cannot be created reliably on a
+Windows machine or a share it hosts.
 
 One row per detected trigger: `timestamp_s`, `page_index`, `frame_number`,
 `frame_timestamp_s`, `offset_in_frame_s`, `volume_index`,
