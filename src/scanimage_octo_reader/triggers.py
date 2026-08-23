@@ -17,6 +17,7 @@ from collections.abc import Sequence
 import numpy as np
 
 from scanimage_octo_reader.page_headers import I2CRecord
+from scanimage_octo_reader.parsers import I2CPacket
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ __all__ = [
     "I2C_TABLE_DTYPE",
     "aux_summary",
     "decode_i2c_key_values",
+    "decode_i2c_payload_text",
     "i2c_payload_matrix",
     "i2c_summary",
     "i2c_table",
@@ -105,6 +107,71 @@ def i2c_payload_matrix(records: Sequence[I2CRecord]) -> np.ndarray:
     for index, payload in enumerate(payloads):
         matrix[index, : payload.size] = payload
     return matrix
+
+
+def _decode_payload_text(packet: I2CPacket) -> tuple[str, bool]:
+    """Best-effort UTF-8 decode of one packet's raw payload bytes.
+
+    A text-flavour payload (``I2CStoreAsChar = true``) is already a decoded
+    string, so this always succeeds for it. A byte-flavour payload is
+    decoded too, on the chance it carries printable text over a
+    byte-oriented channel (e.g. ``I2CStoreAsChar = false`` with an ASCII
+    reading like this module's own docstring example), but only when *every*
+    byte is valid UTF-8 - a genuinely binary payload returns ``("", False)``
+    rather than a lossy, potentially misleading guess.
+    """
+    if packet.text is not None:
+        return packet.text, True
+    if packet.data is not None and packet.data.size:
+        try:
+            return bytes(packet.data.tolist()).decode("utf-8"), True
+        except UnicodeDecodeError:
+            return "", False
+    return "", False
+
+
+def decode_i2c_payload_text(records: Sequence[I2CRecord]) -> np.ndarray:
+    """Decode every I2C payload's raw bytes to UTF-8 text, one row per packet.
+
+    Unlike `decode_i2c_key_values`, this makes no assumption about the
+    payload's internal structure - no ``'<key>_<value>'`` convention
+    required - so it covers arbitrary text payloads (e.g. a plain sensor
+    reading like ``'T-42.61'``). `decoded` is `False` (and `text` empty)
+    for a payload that could not be decoded as UTF-8 at all, so a failed
+    decode is never confused with a genuinely empty payload.
+
+    Returns an array with a `text` field sized to fit the longest decoded
+    string (min 1, so the dtype is always valid), even for zero records -
+    a plain, pickle-free structure a bare `numpy.load` can read.
+    """
+    decoded = [_decode_payload_text(record.packet) for record in records]
+    max_length = max((len(text) for text, ok in decoded if ok), default=0)
+    dtype = np.dtype(
+        [
+            ("timestamp_s", "f8"),
+            ("page_index", "i8"),
+            ("frame_number", "i8"),
+            ("valid", "?"),
+            # 'bytes' (I2CStoreAsChar = false) or 'text' (= true) - the
+            # *storage* flavour, independent of whether `decoded` succeeded.
+            ("payload_kind", "S5"),
+            ("decoded", "?"),
+            ("text", f"<U{max(max_length, 1)}"),
+        ]
+    )
+    table = np.zeros(len(records), dtype=dtype)
+    for index, (record, (text, ok)) in enumerate(zip(records, decoded, strict=True)):
+        packet = record.packet
+        table[index] = (
+            packet.timestamp,
+            record.page_index,
+            record.frame_number,
+            packet.is_valid_timestamp,
+            b"text" if packet.text is not None else b"bytes",
+            ok,
+            text,
+        )
+    return table
 
 
 def decode_i2c_key_values(
@@ -203,6 +270,9 @@ def i2c_summary(records: Sequence[I2CRecord]) -> dict[str, object]:
     lengths = np.array([record.packet.payload_length for record in records], dtype=np.int64)
     summary["min_payload_length"] = int(lengths.min())
     summary["max_payload_length"] = int(lengths.max())
+    summary["n_payloads_decoded_as_text"] = sum(
+        1 for record in records if _decode_payload_text(record.packet)[1]
+    )
 
     decoded, reason = decode_i2c_key_values(records)
     if decoded:

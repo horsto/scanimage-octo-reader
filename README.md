@@ -110,6 +110,7 @@ a merged acquisition). `<out>` defaults to the directory containing the TIFF:
   aux/aux0.npy .. aux3.npy   one table per non-empty AUX line
   i2c/packets.npy            packet timing + frame context + payload length
   i2c/payloads.npy           zero-padded uint8 payload matrix
+  i2c/payload_text.npy       payload bytes decoded to UTF-8 text, where possible
   i2c/packets_raw.json       verbatim source strings
   i2c/decoded_<key>.npy      optional '<key>_<value>' decode
   plots/overview.png         frame timeline + trigger overview
@@ -175,10 +176,17 @@ before assuming a fixed stimulus phase within the volume.
 the AUX tables (including both offsets), plus `valid`, `payload_length` and
 `payload_kind` (`b"bytes"` or `b"text"`). Payloads themselves are of
 variable length, so they live in `i2c/payloads.npy` as a zero-padded `uint8`
-matrix - trim each row with its `payload_length`. `--decode-i2c` additionally
-writes one table per key for the `'<key>_<value>'` string convention (e.g.
-`treadmill_9`), but only if *every* payload matches it; a partial decode would
-be quietly misleading.
+matrix - trim each row with its `payload_length`.
+
+`i2c/payload_text.npy` saves the manual step of trimming and decoding that
+matrix yourself: one row per packet with `text` (the payload decoded as
+UTF-8) and `decoded` (`False`, with `text` empty, for a payload that is not
+valid UTF-8 at all - e.g. genuine binary data). This is a plain byte decode,
+with no assumption about the payload's structure, so it is always written.
+`--decode-i2c` goes a step further and *additionally* writes one table per
+key for the stricter `'<key>_<value>'` string convention (e.g. `treadmill_9`),
+but only if *every* payload matches it; a partial decode would be quietly
+misleading.
 
 Negative I2C timestamps are ScanImage sentinels rather than data. They are
 exported with `valid=False` instead of being dropped, so filtering stays your

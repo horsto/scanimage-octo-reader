@@ -9,6 +9,7 @@ stem of a merged acquisition)::
       aux/aux0.npy .. aux3.npy   per-line trigger event tables (non-empty only)
       i2c/packets.npy            packet timing + frame context + payload length
       i2c/payloads.npy           zero-padded uint8 payload matrix
+      i2c/payload_text.npy       payload bytes decoded to UTF-8 text, where possible
       i2c/packets_raw.json       verbatim source strings
       i2c/decoded_<key>.npy      optional '<key>_<value>' decode
       plots/overview.png         frame timeline + trigger overview
@@ -45,6 +46,7 @@ from scanimage_octo_reader.header import nest_dotted_keys
 from scanimage_octo_reader.qc import QCReport, check_recording
 from scanimage_octo_reader.triggers import (
     decode_i2c_key_values,
+    decode_i2c_payload_text,
     i2c_payload_matrix,
     i2c_table,
 )
@@ -292,7 +294,7 @@ def _write_aux(recording: Recording, directory: Path) -> list[Path]:
 
 
 def _write_i2c(recording: Recording, directory: Path, decode_i2c: bool) -> list[Path]:
-    """Write the I2C packet table, payload matrix, raw strings and optional decode."""
+    """Write the I2C packet table, payload matrix/text, raw strings and optional decode."""
     records = recording.i2c
     if not records:
         return []
@@ -308,6 +310,13 @@ def _write_i2c(recording: Recording, directory: Path, decode_i2c: bool) -> list[
     payload_path = i2c_dir / "payloads.npy"
     np.save(payload_path, i2c_payload_matrix(records))
     written.append(payload_path)
+
+    # A general UTF-8 byte decode of every payload - unlike the `decode_i2c`
+    # option below, this makes no assumption about the payload's internal
+    # structure, so it is always written rather than gated behind a flag.
+    payload_text_path = i2c_dir / "payload_text.npy"
+    np.save(payload_text_path, decode_i2c_payload_text(records))
+    written.append(payload_text_path)
 
     raw_path = i2c_dir / "packets_raw.json"
     write_json(

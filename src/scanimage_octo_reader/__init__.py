@@ -29,7 +29,7 @@ from scanimage_octo_reader.parsers import (
     parse_i2c_data,
 )
 from scanimage_octo_reader.qc import QCReport, check_recording
-from scanimage_octo_reader.triggers import decode_i2c_key_values
+from scanimage_octo_reader.triggers import decode_i2c_key_values, decode_i2c_payload_text
 
 
 def _resolve_version() -> str:
@@ -65,6 +65,7 @@ __all__ = [
     "check_recording",
     "compute_geometry",
     "decode_i2c_key_values",
+    "decode_i2c_payload_text",
     "export_recording",
     "find_acquisition_files",
     "parse_aux_trigger",
