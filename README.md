@@ -64,6 +64,10 @@ socto plot --format pdf LC_brain1__00001.tif
 # Look at raw per-page headers, or check for dropped frames
 socto pages LC_brain1__00001.tif --start 100 --stop 110
 socto check *.tif        # exits non-zero if any file has errors
+
+# Pixel calibration and scale bars - see "Pixel calibration" below
+socto calibrate-grid scale_bar_dir/
+socto scalebar LC_brain1__00001.tif -c scale_bar_dir/calibration.csv
 ```
 
 Output is written **next to the TIFF being processed**, in a subfolder named
@@ -263,6 +267,37 @@ FAILED 0Rec6_septa1
 
 The fix is at the source: debounce or clean up the offending input. ScanImage
 allows up to 1000 triggers per frame but recommends keeping it near 10.
+
+## Pixel calibration
+
+Derive real-world pixel size from grid-target recordings, and burn scale bars
+into other recordings using that calibration.
+
+```bash
+# Measure µm/pixel per zoom level from grid-target TIFFs named
+# <...>_zoom<int>_<frac>_<horizontal|vertical>_<index>.tif (pitch along x for
+# "horizontal", along y for "vertical")
+socto calibrate-grid scale_bar_dir/ --pitch-um 10 --out scale_bar_dir/
+
+# Burn a scale bar into the average projection of a recording
+socto scalebar LC_brain1__00001.tif -c scale_bar_dir/calibration.csv --length-um 50
+```
+
+`calibrate-grid` writes `calibration.csv` (`zoom, px_to_micron_x/y,
+micron_to_px_x/y, resolution_px_x/y, n_peaks_x/y` - raw measurements, no QC
+verdict columns) plus a `calibration.png` sanity-check plot. Zoom and
+resolution are read from each file's own ScanImage header, falling back to
+the filename (with a warning) if that header is unreadable; an unreliable
+pitch measurement (too few detected lines, or too irregular a spacing) is
+reported as a warning rather than silently used or dropped. `--diagnostics`
+additionally saves a per-file peak-detection plot.
+
+`scalebar` interpolates the calibration for a recording's zoom and rescales
+it to the recording's *actual* resolution - \u00b5m/pixel scales inversely
+with pixel count for a fixed field of view - so a recording at a different
+resolution than the calibration images (e.g. 1024 vs. 512) is handled
+correctly. A zoom outside the calibrated range is never extrapolated: it is a
+hard error, and the command exits non-zero if any input fails.
 
 ## Notes on the format
 
