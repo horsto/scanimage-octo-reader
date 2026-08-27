@@ -37,6 +37,7 @@ __all__ = [
     "PageSweep",
     "aux_event_dtype",
     "read_page_descriptions",
+    "recover_trailing_pages",
     "sweep_pages",
 ]
 
@@ -210,8 +211,8 @@ def read_page_descriptions(tif: TiffFile) -> tuple[list[str], int]:
         page = pages.get(index, aspage=True)
         descriptions.append(getattr(page, "description", "") or "")
 
-    recovered = _recover_trailing_pages(tif, len(descriptions))
-    descriptions.extend(recovered)
+    recovered = recover_trailing_pages(tif, len(descriptions))
+    descriptions.extend(page.description or "" for page in recovered)
     return descriptions, len(recovered)
 
 
@@ -225,8 +226,15 @@ def _next_ifd_offset(tif: TiffFile, offset: int) -> int:
     return int(struct.unpack(tiff.offsetformat, handle.read(tiff.offsetsize))[0])
 
 
-def _recover_trailing_pages(tif: TiffFile, n_reported: int) -> list[str]:
-    """Follow the IFD chain past the last reported page and read what remains."""
+def recover_trailing_pages(tif: TiffFile, n_reported: int) -> list[TiffPage]:
+    """Follow the IFD chain past the last reported page and read what remains.
+
+    Returns the recovered pages themselves, in file order, so callers can
+    take their headers *or* their pixel data (see
+    `scanimage_octo_reader.projection`, which has to read both kinds of
+    page): `tifffile` will not index these, so a plain ``tif.pages[i]``
+    cannot reach them.
+    """
     if n_reported == 0:
         return []
 
@@ -237,28 +245,27 @@ def _recover_trailing_pages(tif: TiffFile, n_reported: int) -> list[str]:
         logger.debug("could not inspect the IFD chain past page %d: %s", n_reported - 1, exc)
         return []
 
-    descriptions: list[str] = []
+    pages: list[TiffPage] = []
     index = n_reported
     seen = {last_offset}
     while offset and offset not in seen and offset < tif.filehandle.size:
         seen.add(offset)
         try:
             tif.filehandle.seek(offset)
-            page = TiffPage(tif, index=index)
-            descriptions.append(page.description or "")
+            pages.append(TiffPage(tif, index=index))
             offset = _next_ifd_offset(tif, offset)
         except Exception as exc:  # noqa: BLE001 - a truncated tail is not fatal
             logger.warning("stopped recovering trailing pages at IFD %d: %s", index, exc)
             break
         index += 1
 
-    if descriptions:
+    if pages:
         logger.info(
             "recovered %d page(s) that tifffile did not report (it stopped at %d)",
-            len(descriptions),
+            len(pages),
             n_reported,
         )
-    return descriptions
+    return pages
 
 
 def sweep_pages(

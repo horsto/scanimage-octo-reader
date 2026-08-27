@@ -68,6 +68,10 @@ socto check *.tif        # exits non-zero if any file has errors
 # Pixel calibration and scale bars - see "Pixel calibration" below
 socto calibrate-grid scale_bar_dir/
 socto scalebar LC_brain1__00001.tif -c scale_bar_dir/calibration.csv
+
+# Collapse a multi-plane timeseries to one page per volume - see
+# "Plane projections" below
+socto project LC_brain1__00001.tif -m mean
 ```
 
 Output is written **next to the TIFF being processed**, in a subfolder named
@@ -318,6 +322,99 @@ with pixel count for a fixed field of view - so a recording at a different
 resolution than the calibration images (e.g. 1024 vs. 512) is handled
 correctly. A zoom outside the calibrated range is never extrapolated: it is a
 hard error, and the command exits non-zero if any input fails.
+
+## Plane projections
+
+A volumetric acquisition stores every Z-plane as its own page, so a 5-plane
+recording of 5000 timepoints is a flat stack of 25 000+ pages. `socto project`
+gives the time axis back: one output page per volume, each a projection across
+that volume's planes.
+
+```bash
+# 12 000 pages (4000 volumes x 2 planes + flyback) -> a 4000-page TIFF
+socto project "first brain vol2_00003.tif" -m mean
+
+# Several projections in one pass over the file, and a plane subset
+socto project LC_brain1__00001.tif -m mean -m max -m std
+socto project LC_brain1__00001.tif -m max --planes 0,1
+
+# Preview a long recording, or pick one channel of a multi-channel file
+socto project LC_brain1__00001.tif --limit 200
+socto project two_colour__00001.tif --channel 2
+
+# With several frames per Z position, average them before projecting
+socto project repeats__00001.tif -m max --repeats average
+```
+
+Written to `<out>/<name>/<name>_proj-<method>.tif` (plus `_ch<N>` when a
+recording saved more than one channel, which gets one file per channel).
+
+- **Flyback pages are excluded** - they image no Z position - and a partial
+  trailing volume is skipped rather than projected from an incomplete set of
+  planes.
+- **`framesPerSlice` repeats are pooled in with the planes.** With more than one
+  frame per Z position, *every* page of a selected plane participates in one
+  single reduction - 5 planes x 10 frames per plane means one output page per
+  volume computed from all 50 pages at once, not repeats-then-planes in two
+  steps. This is exact and unbiased for `mean`: every plane contributes equally
+  many repeats, so the result is precisely the average of the per-plane
+  temporal averages, and averaging more frames only lowers the noise.
+  **`max` and `std` are both affected by the repeat count**, for different
+  reasons, and neither is comparable across recordings with different
+  `framesPerSlice`:
+  - `max` is a *biased* statistic - its expectation grows roughly like
+    `sigma * sqrt(log n)` with the number `n` of samples pooled. Grouping does
+    not matter (max is associative), but sample count does: on a flat
+    background with `sigma = 10`, pooling 5 planes x 10 repeats lifts the noise
+    floor by ~+22 versus ~+12 for one frame per plane, and ~+4 if the repeats
+    are averaged before the max. A max projection therefore gets brighter and
+    more hot-pixel-prone the more repeats were acquired.
+  - `std` conflates temporal jitter *within* a plane with the brightness
+    differences *between* depths, and the latter usually dominates - so
+    `-m std` on a `framesPerSlice > 1` recording is closer to a depth-contrast
+    map than a noise map.
+
+  **`--repeats average`** handles this: it collapses each plane's repeats into
+  one averaged frame *first*, then applies the method across planes. `mean` is
+  unchanged, `max` is taken over denoised per-plane frames (bias ~+4 rather
+  than ~+22 in the example above) and no longer depends on the repeat count,
+  and `std` becomes a purely between-plane measure. The default stays
+  `--repeats pool`, and the flag is a no-op when there is one frame per Z
+  position. Which mode was used is recorded in the output's JSON description.
+
+  Note also that output pages are spaced at the *volume* rate, so the repeats
+  collapse rather than giving finer time sampling, and that ScanImage's
+  Z-outer/repeat-inner order means one output page mixes samples spanning the
+  whole volume period.
+- **A `std` projection needs at least two frames per output page.** Selecting a
+  single plane (or a single plane with `--repeats average`, which leaves one
+  averaged frame) would produce a stack of exact zeros that looks like a
+  result, so it is refused with an error instead.
+- **`--dtype auto` (the default)** keeps the source dtype for `mean` and `max`,
+  so an `int16` recording stays `int16` instead of doubling in size, and uses
+  `float32` for `std`, whose values are not meaningful rounded onto an integer
+  grid. `int16`, `uint16` and `float32` can be requested explicitly; integer
+  output is rounded and clipped.
+- **Memory stays at one volume**, whatever the file size: pages are appended to
+  the output as they are computed, and BigTIFF is enabled automatically once
+  the output would pass the 4 GB classic-TIFF limit. Several `-m` methods cost
+  one pass over the file, not one each.
+- The first output page carries a **JSON `ImageDescription`** with the method,
+  the planes and their Z positions, the channel, the volume rate and the source
+  files, so a projection that has been moved elsewhere is still traceable to
+  its acquisition. Per-volume timestamps come from `socto export`'s
+  `frames.npy` (`volume_timestamp_s`).
+- The source's ScanImage `Software` header is carried over, but with **the
+  plane and channel layout fields rewritten** to describe the projection
+  (`hStackManager.enable`/`hFastZ.enable` off, one slice, no flyback, a scalar
+  `channelSave`, and `scanFrameRate` set to the source's volume rate, since one
+  page is now one volume). This matters: readers derive the page layout *from*
+  that header - `socto` itself and `napari-tiff` both gate on
+  `hStackManager.enable`/`actualNumSlices` - so a verbatim copy makes the
+  planes reappear on opening and divides the apparent page count. Everything
+  not about the layout (zoom, objective resolution, scanner, PMT settings) is
+  left exactly as ScanImage wrote it, so `socto scalebar` and friends still
+  work on a projection.
 
 ## Notes on the format
 

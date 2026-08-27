@@ -93,6 +93,34 @@ class TestLightStimRecording:
         assert (result.directory / "plots" / "overview.png").stat().st_size > 0
         assert (result.directory / "plots" / "overview.pdf").stat().st_size > 0
 
+    def test_plane_projection(self, recording, tmp_path):
+        """The projection must match a hand-rolled one over the same pages.
+
+        `limit` keeps this to a few volumes: projecting all 5000 means
+        reading the whole multi-gigabyte file.
+        """
+        import numpy as np
+        import tifffile
+
+        from scanimage_octo_reader.projection import project_recording
+
+        results = project_recording(recording, tmp_path, methods=["mean", "max"], limit=4)
+        by_method = {result.method: result for result in results}
+        assert set(by_method) == {"mean", "max"}
+
+        # 4 pages per volume: 3 slices, then one flyback frame.
+        with tifffile.TiffFile(recording.paths[0]) as tif:
+            volume = np.stack([tif.pages[page].asarray() for page in (4, 5, 6)])
+
+        with tifffile.TiffFile(by_method["mean"].path) as tif:
+            assert len(tif.pages) == 4
+            assert tif.pages[0].dtype == "int16"  # the source dtype, under `auto`
+            expected = np.rint(volume.astype(np.float32).mean(axis=0)).astype(np.int16)
+            assert np.array_equal(tif.pages[1].asarray(), expected)
+
+        with tifffile.TiffFile(by_method["max"].path) as tif:
+            assert np.array_equal(tif.pages[1].asarray(), volume.max(axis=0))
+
 
 class TestDenseTriggerRecording:
     """`brain1__00013.tif`: a trigger on every one of its 20 000 frames."""

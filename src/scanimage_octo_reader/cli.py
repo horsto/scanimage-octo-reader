@@ -8,6 +8,7 @@ help rather than an error - see `no_args_is_help`.
 from __future__ import annotations
 
 import logging
+from functools import partial
 from pathlib import Path
 from typing import Annotated
 
@@ -103,6 +104,69 @@ def _validated_formats(formats: list[str] | None) -> tuple[str, ...]:
         raise typer.Exit(code=2)
     # Preserve the order given, minus duplicates.
     return tuple(dict.fromkeys(formats))
+
+
+def _validated_methods(methods: list[str] | None) -> tuple[str, ...]:
+    """Validate the requested projection methods, defaulting to the mean."""
+    from scanimage_octo_reader.projection import PROJECTION_METHODS
+
+    if not methods:
+        return ("mean",)
+    unsupported = [item for item in methods if item not in PROJECTION_METHODS]
+    if unsupported:
+        error_console.print(
+            f"[red]error[/red] unsupported projection method(s): {', '.join(unsupported)}; "
+            f"choose from {', '.join(PROJECTION_METHODS)}"
+        )
+        raise typer.Exit(code=2)
+    return tuple(dict.fromkeys(methods))
+
+
+def _validated_dtype(dtype: str) -> str:
+    from scanimage_octo_reader.projection import DTYPE_CHOICES
+
+    if dtype not in DTYPE_CHOICES:
+        error_console.print(
+            f"[red]error[/red] unsupported output dtype: {dtype}; "
+            f"choose from {', '.join(DTYPE_CHOICES)}"
+        )
+        raise typer.Exit(code=2)
+    return dtype
+
+
+def _validated_repeats(repeats: str) -> str:
+    from scanimage_octo_reader.projection import REPEAT_MODES
+
+    if repeats not in REPEAT_MODES:
+        error_console.print(
+            f"[red]error[/red] unsupported repeat mode: {repeats}; "
+            f"choose from {', '.join(REPEAT_MODES)}"
+        )
+        raise typer.Exit(code=2)
+    return repeats
+
+
+def _advance(bar, task, completed: int) -> None:
+    """Progress callback for `project`, as a `partial` rather than a closure."""
+    bar.update(task, completed=completed)
+
+
+def _parsed_planes(planes: str | None) -> list[int] | None:
+    """Parse a ``0,2,3`` plane selection; None means every plane."""
+    if planes is None:
+        return None
+    items = [item.strip() for item in planes.split(",") if item.strip()]
+    try:
+        parsed = [int(item) for item in items]
+    except ValueError:
+        parsed = []
+    if not parsed:
+        error_console.print(
+            f"[red]error[/red] could not read --planes {planes!r}; "
+            "give zero-based plane indices, e.g. --planes 0,2"
+        )
+        raise typer.Exit(code=2)
+    return parsed
 
 
 @app.callback(invoke_without_command=True)
@@ -629,6 +693,158 @@ def scalebar(
                 f"[green]wrote[/green] {out_path} "
                 f"(zoom {zoom:g}, {width}x{height} px, {um_per_px_x:.4g} \u00b5m/px, "
                 f"{length_um:g} \u00b5m bar)"
+            )
+
+    if failed:
+        raise typer.Exit(code=1)
+
+
+@app.command(no_args_is_help=True)
+def project(
+    files: FilesArgument,
+    methods: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--method",
+            "-m",
+            show_default=False,
+            help="Projection(s) across the planes: mean, max or std. Repeatable. Defaults to mean.",
+        ),
+    ] = None,
+    planes: Annotated[
+        str | None,
+        typer.Option(
+            "--planes",
+            show_default=False,
+            help=(
+                "Comma-separated, zero-based plane indices to project, e.g. 0,2. "
+                "Defaults to every plane."
+            ),
+        ),
+    ] = None,
+    channels: Annotated[
+        list[int] | None,
+        typer.Option(
+            "--channel",
+            show_default=False,
+            help=(
+                "ScanImage channel number(s) to project, as saved in the file. Repeatable. "
+                "Defaults to every saved channel, one output file each."
+            ),
+        ),
+    ] = None,
+    dtype: Annotated[
+        str,
+        typer.Option(
+            "--dtype",
+            help=(
+                "Output pixel type: auto (source dtype for mean/max, float32 for std), "
+                "int16, uint16 or float32."
+            ),
+        ),
+    ] = "auto",
+    repeats: Annotated[
+        str,
+        typer.Option(
+            "--repeats",
+            help=(
+                "How to treat framesPerSlice repeats: 'pool' reduces them together with "
+                "the planes, 'average' averages each plane's repeats first. Only affects "
+                "max and std. No-op when there is one frame per plane."
+            ),
+        ),
+    ] = "pool",
+    limit: Annotated[
+        int,
+        typer.Option("--limit", help="Write at most this many volumes; 0 writes all of them."),
+    ] = 0,
+    out: OutOption = None,
+    acquisition: AcquisitionOption = False,
+    overwrite: OverwriteOption = False,
+    quiet: QuietOption = False,
+) -> None:
+    """Project the planes of a multi-plane timeseries into one page per volume.
+
+    Turns a volumetric acquisition (planes stored as separate pages) into a
+    plain timeseries TIFF: 5000 volumes of 5 planes become 5000 pages, each
+    a mean/max/std projection across those planes. Flyback pages are
+    excluded, and a partial trailing volume is skipped rather than projected
+    from an incomplete set of planes.
+    """
+    from rich.progress import (
+        BarColumn,
+        Progress,
+        TaskProgressColumn,
+        TextColumn,
+        TimeRemainingColumn,
+    )
+
+    from scanimage_octo_reader.projection import project_recording
+
+    chosen_methods = _validated_methods(methods)
+    chosen_planes = _parsed_planes(planes)
+    chosen_dtype = _validated_dtype(dtype)
+    chosen_repeats = _validated_repeats(repeats)
+    failed = False
+
+    for recording in _load(files, acquisition, quiet):
+        expected = recording.geometry.n_volumes(recording.n_pages)
+        if limit:
+            expected = min(expected, limit)
+
+        run = partial(
+            project_recording,
+            recording,
+            out,
+            methods=chosen_methods,
+            planes=chosen_planes,
+            channels=channels or None,
+            dtype=chosen_dtype,
+            repeats=chosen_repeats,
+            limit=limit,
+            overwrite=overwrite,
+        )
+
+        try:
+            if quiet or expected <= 0:
+                results = run()
+            else:
+                # This is the one command that reads pixel data in bulk
+                # (gigabytes for a real recording), so it is worth a bar
+                # rather than a spinner.
+                with Progress(
+                    TextColumn("[progress.description]{task.description}"),
+                    BarColumn(),
+                    TaskProgressColumn(),
+                    TimeRemainingColumn(),
+                    console=console,
+                    transient=True,
+                ) as bar:
+                    task = bar.add_task(f"projecting {recording.name}", total=expected)
+                    results = run(progress=partial(_advance, bar, task))
+        except (FileExistsError, OSError, ValueError) as error:
+            error_console.print(f"[red]error[/red] {recording.name}: {error}")
+            failed = True
+            continue
+
+        if quiet:
+            continue
+        for warning in results[0].warnings:
+            error_console.print(f"[yellow]warning[/yellow] {recording.name}: {warning}")
+        for result in results:
+            channel = "" if result.channel is None else f", channel {result.channel}"
+            # Spell out the frame count: for max and std it, not just the
+            # plane count, determines what the numbers mean.
+            reduced = (
+                ""
+                if result.n_reduced_frames == len(result.planes)
+                else f", {result.n_reduced_frames} frames/page (repeats: {result.repeats})"
+            )
+            console.print(
+                f"[green]wrote[/green] {result.path} "
+                f"({result.n_pages} page(s), {result.method} of "
+                f"{len(result.planes)} plane(s) {result.planes}{reduced}, "
+                f"{result.dtype}{channel})"
             )
 
     if failed:

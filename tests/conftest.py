@@ -123,14 +123,22 @@ def write_tif(
     header: str | None = None,
     shape: tuple[int, int] = (4, 4),
     bigtiff: bool = False,
+    frames: list[np.ndarray] | None = None,
 ) -> None:
-    """Write a multi-page TIFF that looks like ScanImage output to `path`."""
+    """Write a multi-page TIFF that looks like ScanImage output to `path`.
+
+    Pages are blank unless `frames` gives one array per description; the
+    pixel-data tests need pages that can be told apart, while the metadata
+    tests only care about the tags.
+    """
     header = build_header() if header is None else header
-    frame = np.zeros(shape, dtype=np.int16)
+    blank = np.zeros(shape, dtype=np.int16)
+    if frames is not None and len(frames) != len(descriptions):
+        raise ValueError(f"got {len(frames)} frame(s) for {len(descriptions)} page(s)")
     with tifffile.TiffWriter(path, bigtiff=bigtiff) as writer:
-        for description in descriptions:
+        for page, description in enumerate(descriptions):
             writer.write(
-                frame,
+                blank if frames is None else frames[page],
                 description=description,
                 software=header,
                 metadata=None,
@@ -200,6 +208,95 @@ def volumetric_tif(tmp_path):
         }
     )
     write_tif(path, descriptions_for(24, aux_events={0: [5]}), header=header)
+    return path
+
+
+# Volumetric fixtures for the projection tests: 3 slices + 1 flyback frame.
+VOLUMETRIC_HEADER_OVERRIDES: dict[str, object] = {
+    "SI.hStackManager.enable": True,
+    "SI.hFastZ.enable": True,
+    "SI.hStackManager.actualNumSlices": 3,
+    "SI.hStackManager.numFramesPerVolume": 3,
+    "SI.hStackManager.numFramesPerVolumeWithFlyback": 4,
+    "SI.hStackManager.zs": [10.0, 20.0, 30.0],
+    "SI.hRoiManager.scanVolumeRate": 7.5,
+}
+
+
+def page_value_frames(n_pages: int, shape: tuple[int, int] = (4, 4)) -> list[np.ndarray]:
+    """One frame per page, filled with that page's index.
+
+    A projection of known pages then has a hand-computable answer, and any
+    page picked from the wrong slice, channel or flyback position shows up
+    immediately as a wrong number rather than a plausible-looking image.
+    """
+    return [np.full(shape, page, dtype=np.int16) for page in range(n_pages)]
+
+
+@pytest.fixture
+def valued_volumetric_tif(tmp_path):
+    """24 pages = 6 volumes of 3 slices + 1 flyback, page N filled with N."""
+    path = tmp_path / "vol__00001.tif"
+    write_tif(
+        path,
+        descriptions_for(24),
+        header=build_header(**VOLUMETRIC_HEADER_OVERRIDES),
+        frames=page_value_frames(24),
+    )
+    return path
+
+
+@pytest.fixture
+def valued_volumetric_two_channel_tif(tmp_path):
+    """48 pages = 6 volumes x (3 slices + 1 flyback) x 2 channels, page N filled with N."""
+    path = tmp_path / "volchan__00001.tif"
+    write_tif(
+        path,
+        descriptions_for(48),
+        header=build_header(**VOLUMETRIC_HEADER_OVERRIDES, **{"SI.hChannels.channelSave": [1, 2]}),
+        frames=page_value_frames(48),
+    )
+    return path
+
+
+@pytest.fixture
+def valued_frame_repeat_tif(tmp_path):
+    """14 pages = 2 volumes x (2 planes x 3 frames per plane + 1 flyback).
+
+    Exercises ``framesPerSlice > 1``, where a volume holds several frames per
+    Z position: page N is filled with N, so which pages were pooled is
+    visible in the result.
+    """
+    path = tmp_path / "repeats__00001.tif"
+    write_tif(
+        path,
+        descriptions_for(14),
+        header=build_header(
+            **{
+                "SI.hStackManager.enable": True,
+                "SI.hFastZ.enable": True,
+                "SI.hStackManager.actualNumSlices": 2,
+                "SI.hStackManager.framesPerSlice": 3,
+                "SI.hStackManager.numFramesPerVolume": 6,
+                "SI.hStackManager.numFramesPerVolumeWithFlyback": 7,
+                "SI.hStackManager.zs": [10.0, 20.0],
+            }
+        ),
+        frames=page_value_frames(14),
+    )
+    return path
+
+
+@pytest.fixture
+def partial_volume_tif(tmp_path):
+    """22 pages: 5 whole volumes of 4 pages, then a 2-page partial volume."""
+    path = tmp_path / "partial__00001.tif"
+    write_tif(
+        path,
+        descriptions_for(22),
+        header=build_header(**VOLUMETRIC_HEADER_OVERRIDES),
+        frames=page_value_frames(22),
+    )
     return path
 
 

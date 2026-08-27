@@ -28,6 +28,11 @@ from scanimage_octo_reader.parsers import (
     parse_epoch,
     parse_i2c_data,
 )
+from scanimage_octo_reader.projection import (
+    PROJECTION_METHODS,
+    ProjectionResult,
+    project_recording,
+)
 from scanimage_octo_reader.qc import QCReport, check_recording
 from scanimage_octo_reader.triggers import decode_i2c_key_values, decode_i2c_payload_text
 
@@ -54,8 +59,10 @@ def _resolve_version() -> str:
 __version__ = _resolve_version()
 
 __all__ = [
+    "PROJECTION_METHODS",
     "I2CPacket",
     "PageSweep",
+    "ProjectionResult",
     "QCReport",
     "Recording",
     "ScanGeometry",
@@ -71,6 +78,7 @@ __all__ = [
     "parse_aux_trigger",
     "parse_epoch",
     "parse_i2c_data",
+    "project_recording",
     "read_header",
     "read_recording",
     "sweep_pages",

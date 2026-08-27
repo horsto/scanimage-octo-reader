@@ -6,6 +6,7 @@ import json
 import re
 
 import pytest
+import tifffile
 from conftest import FRAME_PERIOD_S, build_page_description, descriptions_for, write_tif
 from rich.console import Console
 from typer.testing import CliRunner
@@ -47,7 +48,16 @@ class TestHelp:
         result = runner.invoke(app, [])
         assert result.exit_code == 0
         assert "Usage" in plain(result)
-        for command in ("info", "metadata", "triggers", "plot", "export", "pages", "check"):
+        for command in (
+            "info",
+            "metadata",
+            "triggers",
+            "plot",
+            "export",
+            "pages",
+            "project",
+            "check",
+        ):
             assert command in plain(result)
 
     def test_subcommand_without_arguments_shows_its_help(self):
@@ -191,6 +201,135 @@ class TestPlotCommand:
             ["plot", str(single_plane_tif), "-o", str(tmp_path), "--format", "jpeg"],
         )
         assert result.exit_code == 2
+
+
+class TestProjectCommand:
+    def test_writes_one_page_per_volume(self, valued_volumetric_tif, tmp_path):
+        result = runner.invoke(
+            app, ["project", str(valued_volumetric_tif), "-o", str(tmp_path / "out")]
+        )
+        assert result.exit_code == 0, plain(result)
+        path = tmp_path / "out" / "vol__00001" / "vol__00001_proj-mean.tif"
+        assert path.exists()
+        with tifffile.TiffFile(path) as tif:
+            assert len(tif.pages) == 6
+        assert "6 page(s), mean of 3 plane(s)" in plain(result)
+
+    def test_several_methods_and_a_plane_selection(self, valued_volumetric_tif, tmp_path):
+        result = runner.invoke(
+            app,
+            [
+                "project",
+                str(valued_volumetric_tif),
+                "-o",
+                str(tmp_path / "out"),
+                "-m",
+                "max",
+                "-m",
+                "std",
+                "--planes",
+                "0,1",
+            ],
+        )
+        assert result.exit_code == 0, plain(result)
+        directory = tmp_path / "out" / "vol__00001"
+        assert {path.name for path in directory.iterdir()} == {
+            "vol__00001_proj-max.tif",
+            "vol__00001_proj-std.tif",
+        }
+
+    def test_rejects_an_unknown_method(self, valued_volumetric_tif, tmp_path):
+        result = runner.invoke(
+            app,
+            ["project", str(valued_volumetric_tif), "-o", str(tmp_path), "-m", "median"],
+        )
+        assert result.exit_code == 2
+
+    def test_rejects_an_unreadable_plane_selection(self, valued_volumetric_tif, tmp_path):
+        result = runner.invoke(
+            app,
+            ["project", str(valued_volumetric_tif), "-o", str(tmp_path), "--planes", "top"],
+        )
+        assert result.exit_code == 2
+
+    def test_a_single_plane_recording_is_an_error(self, single_plane_tif, tmp_path):
+        result = runner.invoke(app, ["project", str(single_plane_tif), "-o", str(tmp_path / "out")])
+        assert result.exit_code == 1
+
+    def test_overwrite_is_required_to_replace_output(self, valued_volumetric_tif, tmp_path):
+        arguments = ["project", str(valued_volumetric_tif), "-o", str(tmp_path / "out")]
+        assert runner.invoke(app, arguments).exit_code == 0
+        assert runner.invoke(app, arguments).exit_code == 1
+        assert runner.invoke(app, [*arguments, "--overwrite"]).exit_code == 0
+
+    def test_repeats_average(self, valued_frame_repeat_tif, tmp_path):
+        result = runner.invoke(
+            app,
+            [
+                "project",
+                str(valued_frame_repeat_tif),
+                "-o",
+                str(tmp_path / "out"),
+                "-m",
+                "max",
+                "--repeats",
+                "average",
+                "--dtype",
+                "float32",
+            ],
+        )
+        assert result.exit_code == 0, plain(result)
+        path = tmp_path / "out" / "repeats__00001" / "repeats__00001_proj-max.tif"
+        with tifffile.TiffFile(path) as tif:
+            # max over the two plane averages (1, 4), not the pooled max of 5.
+            assert [float(page.asarray()[0, 0]) for page in tif.pages] == [4.0, 11.0]
+        # Averaged repeats leave one frame per plane, so the frame count
+        # matches the plane count and needs no extra annotation.
+        assert "max of 2 plane(s) [0, 1]" in plain(result)
+
+    def test_rejects_an_unknown_repeat_mode(self, valued_volumetric_tif, tmp_path):
+        result = runner.invoke(
+            app,
+            ["project", str(valued_volumetric_tif), "-o", str(tmp_path), "--repeats", "median"],
+        )
+        assert result.exit_code == 2
+
+    def test_a_degenerate_std_is_an_error(self, valued_volumetric_tif, tmp_path):
+        result = runner.invoke(
+            app,
+            [
+                "project",
+                str(valued_volumetric_tif),
+                "-o",
+                str(tmp_path / "out"),
+                "-m",
+                "std",
+                "--planes",
+                "0",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "at least 2 frames" in plain(result)
+
+    def test_limit_and_dtype(self, valued_volumetric_tif, tmp_path):
+        result = runner.invoke(
+            app,
+            [
+                "project",
+                str(valued_volumetric_tif),
+                "-o",
+                str(tmp_path / "out"),
+                "--limit",
+                "2",
+                "--dtype",
+                "float32",
+            ],
+        )
+        assert result.exit_code == 0, plain(result)
+        path = tmp_path / "out" / "vol__00001" / "vol__00001_proj-mean.tif"
+        with tifffile.TiffFile(path) as tif:
+            assert len(tif.pages) == 2
+            assert tif.pages[0].dtype == "float32"
 
 
 class TestPagesCommand:
